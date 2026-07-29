@@ -11,9 +11,10 @@ class Settings(BaseSettings):
     )
 
     # ---- LLM（必填）----
-    openai_base_url: str
-    openai_api_key: str
-    openai_model: str
+    llm_provider: str = "deepseek"  # deepseek | openai | custom
+    openai_base_url: str = ""
+    openai_api_key: str = ""
+    openai_model: str = "deepseek-chat"
 
     # ---- 基础 ----
     jwt_secret: str = "dev-secret"
