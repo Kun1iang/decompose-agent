@@ -25,6 +25,9 @@ pg = [
     "langgraph-checkpoint-postgres>=2.0",
 ]
 
+[project.scripts]
+decompose = "agent_starter.cli:main"
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"

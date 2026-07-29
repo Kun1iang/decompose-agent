@@ -20,4 +20,7 @@ def register_enabled_domains(enable_example: bool | None = None) -> None:
         example_todo.register()
     # ↑↑↑ ↑↑↑
 
+    # 数据分析域（拆解-并行检索-综合）
+    from agent_starter.tasks import analytics
+
     # scaffold:domains
