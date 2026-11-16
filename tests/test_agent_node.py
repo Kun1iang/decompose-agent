@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
@@ -23,18 +25,19 @@ async def test_agent_node_returns_ai_message(fake_llm):
 
 
 @pytest.mark.asyncio
-async def test_graph_runs_one_turn(monkeypatch):
-    # 无注册域：classify 不调 LLM 返空；agent 单次问答
+async def test_graph_runs_one_turn():
+    # 无注册域：classify 不调 LLM；主图仍执行拆解和综合两个核心 LLM 调用。
     from agent_starter.tasks import domains as d
     d.clear_registry()
     from tests.conftest import FakeLLM
-    fake = FakeLLM(reply="你好，我是 agent。")
-    import agent_starter.nodes.agent as agent_mod
-    import agent_starter.nodes.classify as classify_mod
-    monkeypatch.setattr(agent_mod, "build_llm", lambda *a, **k: fake)
-    monkeypatch.setattr(classify_mod, "build_llm", lambda *a, **k: fake)
+    fake = FakeLLM(
+        responses=[
+            json.dumps({"steps": []}),
+            "你好，我是 agent。",
+        ]
+    )
 
-    graph = build_graph(checkpointer=MemorySaver())
+    graph = build_graph(checkpointer=MemorySaver(), llm_factory=lambda: fake)
     out = await graph.ainvoke(
         {"messages": [HumanMessage(content="在吗")], "user_id": 1, "domain": ""},
         config={"configurable": {"thread_id": "t1"}},

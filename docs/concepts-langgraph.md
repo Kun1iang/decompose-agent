@@ -45,7 +45,7 @@ async def recall_memory(state, *, store=None) -> dict:
     return {"recalled_memory": recalled}   # 部分更新：只写 recalled_memory
 ```
 
-约定：节点是 **async**；返回 dict 只放要更新的键；副作用（调 LLM/工具/DB）都在节点里。最复杂的节点是 `agent_loop_action`（一个 ReAct 循环，见 §6）。
+约定：节点是 **async**；返回 dict 只放要更新的键；副作用（调 LLM/工具/DB）都在节点里。当前主链最复杂的节点是 `decompose` / `retrieve` / `synthesize`（见 §6）。
 
 > 模板约定节点带 `*, llm=None`/`*, store=None` 这类可注入依赖，方便测试用假实现替换。
 
@@ -63,11 +63,13 @@ async def recall_memory(state, *, store=None) -> dict:
 ```python
 builder.add_edge(START, "classify")
 builder.add_edge(START, "recall")      # classify ∥ recall 并行 fan-out
-builder.add_edge("classify", "agent")
-builder.add_edge("recall", "agent")    # agent 处 fan-in（等两者都完成）
-builder.add_edge("agent", "write")
+builder.add_edge("classify", "decompose")
+builder.add_edge("recall", "decompose") # decompose 等两路都完成
+builder.add_edge("decompose", "retrieve")
+builder.add_edge("retrieve", "synthesize")
+builder.add_edge("synthesize", "write")
 builder.add_edge("write", END)
-# START → {classify ∥ recall} → agent → write → END
+# START → {classify ∥ recall} → decompose → retrieve → synthesize → write → END
 ```
 
 `classify` 写 `state.domain`、`recall` 写 `state.recalled_memory`——字段不冲突，所以能安全并行。**加节点/边不改 `build_graph(checkpointer=None)` 签名**，拓扑演进对调用方透明。
@@ -90,19 +92,18 @@ await graph.ainvoke(inputs, config={"configurable": {"thread_id": "t1"}})
 
 ---
 
-## 6. 工具调用与 ReAct 循环
+## 6. 结构化工具调用
 
-LLM 本身不能执行动作，只能“说要调哪个工具、传什么参数”（tool call）。ReAct 模式 = 在一个节点里循环：
+LLM 本身不能执行动作，只能“说要调哪个工具、传什么参数”。当前主链在 `decompose` 中一次性生成结构化检索计划：
 
 ```
-LLM 看历史 → 决定调工具 or 给最终答复
-  ├─ 给最终答复 → 退出循环
-  └─ 要调工具 → 执行工具 → 把结果塞回历史 → 再问 LLM（下一轮）
+LLM 生成计划
+  → planning.py 校验工具名和参数
+  → asyncio.gather 并行执行各步骤
+  → synthesize 统一生成结果
 ```
 
-绑定工具：`llm.bind_tools([...])`，LLM 的回复里就会带 `tool_calls`。
-
-本模板的 `agent_loop_action`（`src/agent_starter/nodes/agent.py`）就是这个循环：按 `state.domain` 经 `select_tools_for_state` 选工具（+ 权限过滤）→ `bind_tools` → 多轮 LLM↔工具（工具返值经 TaskSpec 钩子累积进 `working_draft`）→ 无 tool_call 即终答退出。无工具/无域时退化为单次问答。`MAX_REACT_ROUNDS` 封顶防失控。
+仓库仍保留 `agent_loop_action` 作为旧模板能力，但 `main.py` 和 CLI 实际调用的是 `DecomposeGraph`。阅读当前项目时，不应再把 `nodes/agent.py` 当作主链。
 
 ---
 
@@ -111,9 +112,9 @@ LLM 看历史 → 决定调工具 or 给最终答复
 | 概念 | 文件 | 说明 |
 |---|---|---|
 | State | `state.py` | `AgentState`，`messages` 用 `add_messages` reducer |
-| Node | `nodes/{classify,memory,agent}.py` | classify / recall / write / agent_loop_action |
-| Edge / 装配 | `graph.py` | `build_graph()`：`START→{classify∥recall}→agent→write→END` |
+| Node | `nodes/{classify,memory}.py` + `graph.py` | classify / recall / decompose / retrieve / synthesize / write |
+| Edge / 装配 | `graph.py` | `build_graph()`：`START→{classify∥recall}→decompose→retrieve→synthesize→write→END` |
 | Checkpointer | `main.py` lifespan | 默认 `MemorySaver`；配 `AGENT_PG_DSN` 走 Postgres（opt-in，未验证） |
-| 工具 / ReAct | `nodes/agent.py` | `agent_loop_action` 完整 ReAct 循环 |
+| 工具 / 计划 | `planning.py` + `graph.py` | 校验工具名/参数，并行执行结构化检索步骤 |
 
 下一步看 [architecture.md](architecture.md)（本模板整体架构）和 [adding-a-domain.md](adding-a-domain.md)（怎么把业务接进来）。

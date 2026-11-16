@@ -32,7 +32,7 @@ async def write_memory(state: AgentState, *, store=None, llm=None) -> dict:
     from agent_starter.settings import get_settings
     try:
         llm_enabled = get_settings().enable_llm_pref_extraction
-    except Exception:
+    except Exception:  # noqa: BLE001 - optional settings failure means disabled
         llm_enabled = False  # settings 未配齐（无 OPENAI_* env）→ 视为关闭，write 仍可零依赖跑
     if llm_enabled:
         from agent_starter.memory.llm_extractor import extract_preferences_llm

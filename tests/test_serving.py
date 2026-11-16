@@ -9,10 +9,8 @@ def client(monkeypatch, fake_llm):
     monkeypatch.setenv("OPENAI_MODEL", "gpt-4o-mini")
     monkeypatch.delenv("AGENT_PG_DSN", raising=False)  # 走 MemorySaver
     monkeypatch.delenv("ENABLE_EXAMPLE_DOMAIN", raising=False)
-    import agent_starter.nodes.agent as agent_mod
-    import agent_starter.nodes.classify as classify_mod
-    monkeypatch.setattr(agent_mod, "build_llm", lambda *a, **k: fake_llm)
-    monkeypatch.setattr(classify_mod, "build_llm", lambda *a, **k: fake_llm)
+    import agent_starter.graph as graph_mod
+    monkeypatch.setattr(graph_mod, "build_llm", lambda *a, **k: fake_llm)
     from agent_starter.main import app
     with TestClient(app) as c:  # 进入 lifespan：建 graph(MemorySaver) + sessions
         yield c

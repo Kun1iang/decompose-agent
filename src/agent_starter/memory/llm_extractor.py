@@ -5,7 +5,6 @@ fail-soft：LLM 调用 / JSON 解析失败一律返 []，绝不拖挂 write 节�
 from __future__ import annotations
 
 import json
-import re
 
 import structlog
 

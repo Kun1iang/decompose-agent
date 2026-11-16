@@ -1,13 +1,14 @@
 """命令行模式 —— 直接在终端里问问题，无需启动 HTTP 服务。"""
 from __future__ import annotations
 
-import asyncio
 import argparse
+import asyncio
+
+from langchain_core.messages import HumanMessage
 
 from agent_starter.graph import build_graph
 from agent_starter.settings import get_settings
 from agent_starter.tasks import register_enabled_domains
-from langchain_core.messages import HumanMessage
 
 
 async def run_query(question: str, thread_id: str = "cli", user_id: int = 0) -> str:

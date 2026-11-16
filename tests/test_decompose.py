@@ -1,8 +1,10 @@
 """拆解-并行-综合 Agent 测试。"""
 
-import pytest
 from agent_starter.tasks.analytics.tools import (
-    search_sales, search_refunds, search_complaints, list_products,
+    list_products,
+    search_complaints,
+    search_refunds,
+    search_sales,
 )
 
 
@@ -55,9 +57,10 @@ class TestDecomposePrompt:
 
     def test_decompose_prompt_format(self):
         from agent_starter.graph import DECOMPOSE_PROMPT
-        prompt = DECOMPOSE_PROMPT.format(user_input="测试问题")
+        prompt = DECOMPOSE_PROMPT.format(user_input="测试问题", tool_catalog="- search_sales")
         assert "测试问题" in prompt
         assert "JSON" in prompt
+        assert "search_sales" in prompt
 
     def test_synthesize_prompt_format(self):
         from agent_starter.graph import SYNTHESIZE_PROMPT

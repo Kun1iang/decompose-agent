@@ -1,8 +1,11 @@
 """数据分析域定义。"""
-from agent_starter.tasks.domains import DomainSpec
 from agent_starter.tasks.analytics.tools import (
-    search_sales, search_refunds, search_complaints, list_products,
+    list_products,
+    search_complaints,
+    search_refunds,
+    search_sales,
 )
+from agent_starter.tasks.domains import DomainSpec
 
 SPEC = DomainSpec(
     name="analytics",

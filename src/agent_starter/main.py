@@ -67,7 +67,7 @@ def _inputs(req: ChatRequest) -> dict:
     if workspace_id is None:
         try:
             workspace_id = get_settings().agent_workspace_id
-        except Exception:
+        except Exception:  # noqa: BLE001 - settings load must not block serving default
             workspace_id = 1
     return {
         "messages": [HumanMessage(content=req.message)],

@@ -1,4 +1,8 @@
-from agent_starter.security.sanitize import sanitize_output, sanitize_user_input, wrap_user_input
+from agent_starter.security.sanitize import (
+    sanitize_output,
+    sanitize_user_input,
+    wrap_user_input,
+)
 
 
 def test_sanitize_strips_injection_phrases():

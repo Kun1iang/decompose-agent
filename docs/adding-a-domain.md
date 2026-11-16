@@ -1,8 +1,13 @@
 # 业务怎么对接：加一个域
 
+> ⚠️ 本文主要描述仓库保留的 **ReAct/TaskSpec 扩展路径**。当前经营分析主链使用
+> `DecomposeGraph`：域提供 `read_tools`，`decompose` 生成结构化工具计划，
+> `retrieve` 并行执行。若你要扩展 analytics 能力，优先阅读
+> [architecture.md](architecture.md)；TaskSpec 草稿钩子不属于当前主图。
+
 > ✅ **状态：已实现（Phase 2）。** 域/任务注册机制（`DomainSpec`/`TaskSpec`）已在 `src/agent_starter/tasks/` 落地，并随仓自带 `example_todo` 参照域（默认关）。下文 API 与代码一致。设计依据：[specs/2026-05-27-extraction-design.md](specs/2026-05-27-extraction-design.md)。
 
-核心理念：**业务不进 core，靠注册接口接入。** 你加业务时只在 `tasks/<你的域>/` 下建一个自包含目录 + 在 `tasks/__init__.py` 加一行注册调用；`graph.py` / `classify` / `agent` 一律不动。
+核心理念：**业务不进 core，靠注册接口接入。** 你加业务时只在 `tasks/<你的域>/` 下建一个自包含目录 + 在 `tasks/__init__.py` 加一行注册调用；框架层节点不变。
 
 ---
 
@@ -26,7 +31,7 @@ uv run --extra dev pytest tests/tasks/ticket/test_ticket.py -q
 
 ## 1. 两个概念：Domain 与 Task
 
-- **Domain（业务域）**：一类相关的对话意图 + 工具的聚集。例：`todo`、`ticket`、`hr_offer`。classify 节点据此决定本轮绑哪些工具。用 `DomainSpec` 描述。
+- **Domain（业务域）**：一类相关的对话意图 + 工具的聚集。例：`analytics`、`todo`、`ticket`。用 `DomainSpec` 描述；当前 Decompose 主链读取其 `read_tools`。
 - **Task（任务）**：域内一个“收集字段 → 确认 → 落库”的写动作单元。用 `TaskSpec` 描述，挂一个一次性写库工具 `create_tool` + 一组可选钩子。
 
 一个域可以有 0~N 个 task（纯查询域可以没有 task，只有 read 工具）。
@@ -46,7 +51,7 @@ DomainSpec(
 ```
 
 - `triggers` 既会给 classify LLM 做提示，也会在 LLM 失败/输出未知域时作为确定性兜底；它仍然不写死在 core，删域就删掉了对应线索，core 不残留。
-- `read_tools` 跨域全局可达；`write_tools` 只在当前域被选中时绑给 LLM（收敛写动作的误触发面）。
+- `read_tools` 是当前 Decompose 主链的主要工具来源；`write_tools` 属于旧 ReAct/TaskSpec 路径，当前主图不会执行。
 
 ## 3. TaskSpec（写任务，见 `tasks/registry.py`）
 
@@ -88,16 +93,17 @@ TaskSpec(
    from agent_starter.tasks import todo
    todo.register()
    ```
-4. 完事——不改 `graph.py`、`classify.py`、`agent`、`state.py`。
+4. 完事——不改当前 `graph.py` 主节点、`classify.py` 和 `state.py`。
 
-> classify 自动把你的 `triggers` 纳入候选；`agent_loop_action` 自动按域绑你的工具。这就是“注册式扩展”。
+> classify 自动把你的 `triggers` 纳入候选；Decompose 主链会把全局 `read_tools`
+> 提供给规划器。旧 `agent_loop_action` 仍可按域绑定写工具，但不属于当前入口。
 
 ## 5. 工具：本地 vs MCP
 
 - **本地工具**（✅ 已支持）：纯 Python 函数（读写内存/你自己的 DB/HTTP），用 LangChain `@tool` 暴露。示例域 `example_todo` 就是本地内存实现，保证零依赖可跑。
 - **MCP 工具**（🔌 业务自行对接）：`MCP_SERVER_URL` 已在 settings 预留，但本模板不内置 MCP client。要接“agent 不碰业务库、统一走后端 MCP 服务”的架构（talentos 即如此），需在业务侧加一个 `clients/mcp_client`（Streamable HTTP + JWT 透传）把远端工具包成 `@tool` 注册到域里。
 
-本地工具与（未来的）MCP 工具都用 `@tool` 暴露，对 ReAct 循环无差别。工具抛异常时框架会转成错误 `ToolMessage` 继续对话；但工具内部仍应返回结构化 dict（建议含 `ok`/`error`），方便 TaskSpec hook 和成功文案判断。
+本地工具与（未来的）MCP 工具都用 `@tool` 暴露。Decompose 主链要求工具参数可由 JSON 对象表示，并通过工具的 Pydantic schema 校验。单个工具异常只标记当前检索步骤，不影响其他并行步骤。
 
 ---
 
@@ -125,6 +131,6 @@ grep -ri "example_todo\|todo" src/agent_starter/ \
 
 ## 7. 示例域 `example_todo`（仓内已带）
 
-`src/agent_starter/tasks/example_todo/` 是活参照：增/查/完成待办，跑通完整链路“DomainSpec/TaskSpec 注册 → 按域绑工具 → ReAct 调本地工具 → 出回复”。默认关闭（`ENABLE_EXAMPLE_DOMAIN=0`），生产干净；新人设 `=1` 打开照着抄，抄完按 §6 删掉。
+`src/agent_starter/tasks/example_todo/` 是旧 ReAct/TaskSpec 路径的活参照，不属于当前经营分析主链。默认关闭（`ENABLE_EXAMPLE_DOMAIN=0`）；阅读当前项目时应以 `tasks/analytics/` 为示例。
 
 > 该示例用**直接工具调用**演示（LLM 调 `add_todo`）。你的域若需要“分多轮收集字段再确认落库”，照 §3 的 `tool_result_to_draft_patches` / `render_draft` / `is_draft_displayable` 三个钩子接即可。

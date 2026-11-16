@@ -5,12 +5,12 @@
 ## 数据模型
 - `Preference{key,value}`：结构化偏好，KV、latest-wins（同 key 覆写）。
 - `Observation{text}`：自由文本观察，保留近期 N 条。
-- `RecalledMemory{prefs, observations}`：recall 返回，注入 agent 的 system prompt。
+- `RecalledMemory{prefs, observations}`：recall 返回；当前综合节点只注入偏好，观察字段尚未进入 Prompt。
 
 ## 流程
 `recall_memory` 调 `store.recall(user_id, query)` → 写 `state.recalled_memory` →
-agent 拼进 system → `write_memory` 用**确定性抽取**（`memory/extractor.py`，当前只抽昵称，不调 LLM）
-把偏好 `upsert` 回 store。图拓扑：`START → {classify ∥ recall} → agent → write → END`。
+`synthesize` 把偏好拼进分析 Prompt → `write_memory` 用**确定性抽取**（`memory/extractor.py`，当前只抽昵称，不调 LLM）
+把偏好 `upsert` 回 store。图拓扑：`START → {classify ∥ recall} → decompose → retrieve → synthesize → write → END`。
 
 ## 默认实现 InMemoryStore
 进程内 dict，always-on 全量召回（不做相似度），重启即丢。零依赖、开箱即用。
@@ -24,7 +24,7 @@ agent 拼进 system → `write_memory` 用**确定性抽取**（`memory/extracto
    - 刻意不做 ConflictDetector：KV latest-wins 已覆盖高价值偏好；语义层只检索（会漏，符合“高价值偏好走 KV always-on”原则）。
 
 ## 再扩展
-其它后端实现 `MemoryStore` 协议即可，节点/agent 不改。
+其它后端实现 `MemoryStore` 协议即可，节点不改。
 
 > 取舍参考：结构化 KV（精确、always-on、latest-wins）适合“必须每轮生效”的偏好；
 > 语义召回（pgvector）适合开放式经验记忆，但召回不保证命中。详见抽取源 talentos-agent

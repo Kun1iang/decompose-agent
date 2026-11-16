@@ -2,4 +2,7 @@
 from agent_starter.tasks.analytics.domainspec import SPEC
 from agent_starter.tasks.domains import register_domain
 
-register_domain(SPEC)
+
+def register() -> None:
+    """Register the analytics domain explicitly and idempotently."""
+    register_domain(SPEC)

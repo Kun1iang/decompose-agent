@@ -86,7 +86,7 @@ def get_skills() -> list[Skill]:
         try:
             from agent_starter.settings import get_settings
             skills_dir = get_settings().skills_dir
-        except Exception:
+        except Exception:  # noqa: BLE001 - fall back to the repository default
             skills_dir = "skills"
         _skills = load_skills(skills_dir)
     return _skills

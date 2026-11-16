@@ -1,8 +1,13 @@
-# -*- coding: utf-8 -*-
 """数据分析域的工具集：销售查询、退款查询、投诉查询。"""
 
 from langchain_core.tools import tool
-from agent_starter.tasks.analytics.data import SALES_DATA, REFUND_DATA, COMPLAINT_DATA, PRODUCTS
+
+from agent_starter.tasks.analytics.data import (
+    COMPLAINT_DATA,
+    PRODUCTS,
+    REFUND_DATA,
+    SALES_DATA,
+)
 
 
 def _product_name(pid: str) -> str:

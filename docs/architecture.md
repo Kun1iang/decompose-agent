@@ -1,97 +1,187 @@
 # 架构
 
-本模板的整体结构、模块职责、一个对话 turn 的数据流，以及设计原则。先读 [concepts-langgraph.md](concepts-langgraph.md) 了解 LangGraph 基础。
+本文描述当前 `main.py` 和 CLI 实际使用的 Decompose Agent 主链。仓库中仍保留
+`nodes/agent.py` 等 ReAct 模板能力，但它们不属于当前主图。
 
-> **图例**：✅ 开箱可用并测试 · 🔌 模板提供接线/参考实现，业务按需接真实 infra 或工具服务。
+## 1. 项目定位
 
----
+项目面向**跨多个指标的经营分析问题**，典型问题包括：
 
-## 1. 图拓扑
+- 对比不同产品线的销售、退款和投诉趋势。
+- 计算退款率时同时查询销售额和退款笔数。
+- 找出投诉增长最明显的产品线及主要投诉类别。
 
-`src/agent_starter/graph.py`：
+它不试图让模型在循环中逐轮决定下一步，而是先生成一份有边界的检索计划，再并行取数，最后统一生成报告。
 
-```
-START → {classify ∥ recall} → agent → write → END
-```
+## 2. 图拓扑
 
-- `classify`：判当前业务 `domain`（**读已注册域的 `triggers`**，无业务硬编码；无域则零 LLM 返空；LLM 失败/未知时用 trigger 做确定性兜底）。
-- `recall`：召回用户记忆（偏好/观察）写 `state.recalled_memory`（与 classify 并行 fan-out）。
-- `agent`（`agent_loop_action`）：唯一 ReAct 入口，按 `domain` 选工具（+ 权限过滤），多轮 LLM↔工具，注入记忆/域 prompt，工具异常转 ToolMessage，不让单个业务工具拖垮 turn。
-- `write`：turn 末确定性抽取偏好写 store（开 `ENABLE_LLM_PREF_EXTRACTION` 再叠加 LLM 抽取）。
-
-> 演进只在 `graph.py` 加 node/edge，`build_graph(checkpointer=None)` 签名不变。需要“前端按钮/隐藏块路由”或“分支”时，可在 START 后加一个 router 节点走条件边——本模板未内置。
-
----
-
-## 2. 模块职责
-
-| 模块 | 职责 | 状态 |
-|---|---|---|
-| `settings.py` | 全局配置；可选能力（PG/embed/MCP/LLM 抽取）默认空/关 = 零依赖启动 | ✅ |
-| `state.py` | `AgentState`；通用 `working_draft`（域自解释）+ `permissions`，**无业务字段** | ✅ |
-| `llm.py` | `build_llm()` 从 settings 造 ChatOpenAI | ✅ |
-| `graph.py` | `build_graph()` 装配 StateGraph | ✅ |
-| `nodes/classify.py` | 域分类（读 `DomainSpec.triggers`；无域零 LLM） | ✅ |
-| `nodes/memory.py` | recall（召回）/ write（抽取写入）记忆节点 | ✅ |
-| `nodes/agent.py` | `agent_loop_action`：按域选工具的 ReAct 循环 + 记忆注入 + 安全钩子（`agent_node` 为兼容别名） | ✅ |
-| `tasks/{registry,domains}.py` | **域/任务注册机制**（`TaskSpec`/`DomainSpec`）——业务扩展核心接口；`TaskSpec.create_tool` 会随当前域自动绑定 | ✅ |
-| `tasks/example_todo/` | 唯一示例域（默认关，可整目录删，delete-clean 参照） | ✅ |
-| `memory/{models,store,provider,extractor}.py` | `MemoryStore` 接口 + `InMemoryStore` 默认 + 确定性偏好抽取 | ✅ |
-| `memory/llm_extractor.py` | LLM 富偏好抽取 | 🔌 `ENABLE_LLM_PREF_EXTRACTION` |
-| `memory/{embedding,pgvector_store}.py` | pgvector MemoryStore + embedding 客户端；lifespan opt-in 装配 | 🔌 业务接 PG/embedding 后验证 |
-| `security/{permissions,sanitize,prompt}.py` | 工具权限过滤 + 输入去注入/包裹 + 输出清理 + 系统基线 | ✅ |
-| `serving/{sessions,checkpointer}.py` | 会话索引（InMemory 默认）+ checkpointer 生命周期工厂（Memory/PG） | ✅ |
-| `skills/loader.py` + 顶层 `skills/` | Markdown 能力包：加载 + 按相关性选中 + 注入 system（无代码加 skill） | ✅ |
-| `main.py` | FastAPI：lifespan 装配 + `/health` + `/agent/chat`（同步）+ `/agent/chat/stream`（SSE）+ 会话端点 | ✅ |
-| Postgres checkpoint（`main.py` lifespan） | 配 `AGENT_PG_DSN` → AsyncPostgresSaver | 🔌 业务接 PG 后验证 |
-| MCP 工具接入 | 预留 `MCP_SERVER_URL`；业务把 MCP/后端 API 包成 `@tool` 注册到 domain | 🔌 业务自行对接 |
-
-**单一职责**：node 拆在 `nodes/`，业务域各自一目录在 `tasks/<domain>/`，记忆实现拆在 `memory/`。改一处不牵动全局。
-
----
-
-## 3. 一个对话 turn 的数据流
-
-```
-HTTP POST /agent/chat {message, user_id, thread_id, jwt, permissions?, workspace_id?, page_context?}
-   │
-   ▼ main.py 组装 inputs（HumanMessage + user_id + domain="" ...）
-   ▼ graph.ainvoke(inputs, {thread_id})
-   │   checkpointer 按 thread_id 加载历史 state
-   ├─ classify：state.domain = 命中域（LLM + trigger 兜底） ┐ 并行 fan-out
-   ├─ recall：  state.recalled_memory = 偏好/观察        ┘
-   ▼ agent（fan-in，等 classify+recall）：
-   │   select_tools(domain) + 权限过滤 → bind →
-   │   system 拼基线+记忆+**相关 skill**+域 prompt，user 输入 sanitize/wrap →
-   │   ReAct 多轮（working_draft 经 TaskSpec hook 累积）→ 终答 sanitize
-   ▼ write：确定性(+可选 LLM)抽取偏好 → MemoryStore
-   ▼ main.py 取末条 AIMessage → 返回 {reply}（流式则逐节点 SSE + done）
-   ▼ checkpointer 存本 turn 后 state；sessions.touch 更新会话索引
+```text
+START
+  ├─ classify（业务域分类）
+  └─ recall（偏好记忆召回）
+             ↓ 两路均完成后汇合
+        decompose（一次核心 LLM）
+             ↓
+        retrieve（结构化计划并行执行）
+             ↓
+        synthesize（一次核心 LLM）
+             ↓
+          write
+             ↓
+           END
 ```
 
----
+`classify` 和 `recall` 从 `START` 并行 fan-out，并在 `decompose` 处 fan-in。`decompose` 会等两者都完成后才开始。
 
-## 4. 设计原则（为什么这么拆）
+## 3. 结构化检索计划
 
-1. **开箱即跑**：所有外部依赖（PG/pgvector/MCP/LLM 抽取）都 opt-in，env 留空即关闭、走 in-memory/no-op 兜底。新人 clone 配个 LLM key 就能跑。
-2. **delete-clean**：业务域自包含在 `tasks/<domain>/`，core 不 import 业务符号、不含业务名。删域 = rm 目录 + 删一行注册。验收线：`grep -riE "offer|hr_|..." src/agent_starter`（tasks/ 外）必须 CLEAN。
-3. **注册式扩展**：加业务只在 `tasks/` 下加目录 + 注册，不改 `graph.py`/`classify`/`agent`。框架层不认识具体业务字段名——靠 `DomainSpec`/`TaskSpec` 钩子注入。
-4. **通用 `working_draft`**：取代业务专属草稿字段。框架只给一个 dict 草稿袋 + 通用闸门，含义由当前域解释。
-5. **签名稳定 + 依赖可注入**：`build_graph(checkpointer=None)`、`agent_loop_action(state, *, llm=None)`、`recall/write(state, *, store=None)` 跨阶段不变，演进与测试都靠注入假实现。
+拆解节点不再返回裸字符串子问题，而是返回经过代码校验的计划：
 
----
+```json
+{
+  "steps": [
+    {
+      "question": "查询三个产品线的退款数据",
+      "tool": "search_refunds",
+      "arguments": {
+        "product_id": "",
+        "month": ""
+      }
+    },
+    {
+      "question": "查询三个产品线的销售数据",
+      "tool": "search_sales",
+      "arguments": {
+        "product_id": "",
+        "month": ""
+      }
+    }
+  ]
+}
+```
 
-## 5. 配置矩阵（能力开关）
+`planning.py` 负责：
 
-| env | 空缺省 | 配置后 | 状态 |
+- 移除 Markdown JSON 代码围栏。
+- 校验计划必须是 `{"steps": [...]}`。
+- 校验工具真实存在。
+- 使用工具的 Pydantic 参数模型校验 `arguments`。
+- 限制最多 5 步。
+- 按 `tool + arguments` 去重。
+- 跳过单个非法步骤；如果一个合法步骤都没有，则执行安全兜底计划。
+
+安全兜底计划是：所有全局读工具各调用一次，参数为 `{}`。因此模型偶尔输出坏 JSON 时，系统仍可返回一个较宽泛的分析，而不是直接挂掉。
+
+## 4. 一个请求的数据流
+
+```text
+HTTP POST /agent/chat
+  或 CLI run_query
+      ↓
+组装 inputs：HumanMessage + user_id + workspace_id 等
+      ↓
+checkpointer 按 thread_id 加载会话状态
+      ↓
+classify：写入 domain
+recall：写入 recalled_memory
+      ↓
+decompose：生成并校验结构化步骤
+      ↓
+retrieve：asyncio.gather 并行执行每一步
+      ↓
+synthesize：拼接原始问题、检索步骤、参数、状态、结果和偏好
+      ↓
+write：默认抽取昵称偏好并写入 MemoryStore
+      ↓
+返回末条 AIMessage
+```
+
+FastAPI 的 `/agent/chat/stream` 使用 LangGraph `stream_mode="updates"`，逐节点发送进度事件，最后发送完整 `done.reply`。它不是逐 token 流。
+
+## 5. 节点契约
+
+| 节点 | 输入 | 输出 | 失败处理 |
 |---|---|---|---|
-| `OPENAI_*` | 必填 | LLM 调用 | ✅ |
-| `ENABLE_EXAMPLE_DOMAIN` | 不注册示例域 | `1` 注册 `example_todo` | ✅ |
-| `ENABLE_LLM_PREF_EXTRACTION` | write 只做确定性抽取（不打 LLM） | 叠加 LLM 富偏好抽取 | ✅ |
-| `SKILLS_DIR` | `skills` | 从指定目录加载 Markdown skills | ✅ |
-| `AGENT_PG_DSN` | checkpointer=MemorySaver + 记忆 in-memory | Postgres checkpoint；若同时配下行则启用 pgvector MemoryStore | 🔌 业务接 PG 后验证 |
-| `AGENT_EMBED_BASE_URL` | 记忆仍用 in-memory | 与 `AGENT_PG_DSN` 同配时启用 pgvector 语义召回（需 `[pg]`） | 🔌 业务接 embedding 后验证 |
-| `AGENT_EMBED_DIM` | `1536` | pgvector 表的 embedding 维度，需匹配 `AGENT_EMBED_MODEL` | 🔌 业务按模型配置 |
-| `MCP_SERVER_URL` | 空 | 仅预留配置；业务自行封装 MCP/后端工具 | 🔌 业务自行对接 |
+| `classify` | 用户最新消息、已注册域 | `domain` | LLM 失败时使用 trigger 兜底 |
+| `recall` | `user_id`、用户问题 | `recalled_memory` | 默认内存实现不依赖外部服务 |
+| `decompose` | 原问题、工具目录 | `working_draft.plan` | 坏 JSON/坏参数时使用全量读工具兜底 |
+| `retrieve` | 结构化计划 | `working_draft.sub_results` | 单步骤失败保留错误状态，其他步骤继续 |
+| `synthesize` | 原始问题、检索结果、偏好 | `AIMessage` | 输出清理后写回消息 |
+| `write` | 本轮消息 | 更新 MemoryStore | 默认确定性抽取，不额外调用 LLM |
 
-各能力的实现/扩展细节见对应 concepts 文档；落地节奏见 [specs/2026-05-27-extraction-design.md](specs/2026-05-27-extraction-design.md)。
+每个检索结果包含：
+
+```json
+{
+  "question": "该步骤要回答什么",
+  "tool": "工具名",
+  "arguments": {},
+  "status": "success",
+  "result": "工具返回文本"
+}
+```
+
+异常步骤使用 `status="error"` 和错误类型名，避免异常静默消失。
+
+## 6. 上下文控制
+
+系统使用两级截断：
+
+1. 工具原始结果在 `retrieve` 中截断到 2,000 字符。
+2. 每个结果送入综合 Prompt 前再截断到 500 字符。
+
+当前没有经过基准测试的 token 节省数据，因此文档不宣称固定 token 消耗或固定延迟。
+
+## 7. 三产品线模拟数据
+
+`tasks/analytics/data.py` 提供三条产品线：
+
+| 产品线 | 名称 | 销售数据月份 |
+|---|---|---|
+| `prod_a` | AI客服Agent | 2025-03 至 2025-08 |
+| `prod_b` | 数据分析平台 | 2025-01 至 2025-08 |
+| `prod_c` | 知识库SaaS | 2025-06 至 2025-08 |
+
+三条产品线的数据时间范围不一致，因此只能比较共同覆盖月份，不能笼统宣称三者都有八个月完整数据。
+
+## 8. 记忆与会话
+
+项目有两套不同存储：
+
+1. **会话状态**：LangGraph checkpointer 按 `thread_id` 保存完整图和消息状态。
+2. **长期偏好**：`MemoryStore` 按 `user_id` 保存结构化偏好，默认 `InMemoryStore`。
+
+默认两套都是进程内内存实现，服务重启即丢失。`PgVectorStore` 提供 PostgreSQL + pgvector 参考实现，但仓库没有可用的真实 PostgreSQL/pgvector 集成测试，不能标记为生产验证完成。
+
+## 9. 服务与配置
+
+| 配置 | 默认 | 作用 |
+|---|---|---|
+| `LLM_PROVIDER` | `deepseek` | LLM 提供商 |
+| `OPENAI_BASE_URL` | 按提供商 | OpenAI 兼容接口地址 |
+| `OPENAI_API_KEY` | 空 | 模型密钥 |
+| `OPENAI_MODEL` | `deepseek-chat` | 模型名 |
+| `ENABLE_EXAMPLE_DOMAIN` | `false` | 是否注册 todo 示例域 |
+| `ENABLE_LLM_PREF_EXTRACTION` | `false` | 是否启用 LLM 富偏好抽取 |
+| `AGENT_PG_DSN` | 空 | 可选 PostgreSQL checkpointer/记忆 |
+| `AGENT_EMBED_*` | 空 | 可选 embedding 配置 |
+
+## 10. 扩展边界
+
+新增分析工具时：
+
+1. 使用 LangChain `@tool` 定义工具，并写清参数说明。
+2. 将工具加入业务域的 `read_tools`。
+3. 保证工具参数能由 JSON 对象表示。
+4. 为成功、无数据和异常路径增加测试。
+
+当前 `classify` 还不是工具路由依据；`retrieve` 使用全局读工具目录。如果未来存在多个业务域，应增加按 domain 限制工具集合的路由，而不是让模型在全部写工具中自由选择。
+
+## 11. 当前能力边界
+
+- 数据来自本地模拟数据，不是生产数据库。
+- 结构化计划质量依赖 LLM，真实 DeepSeek 集成需要配置密钥后做人工验收。
+- 失败兜底采用全量读工具，结果可能较宽泛。
+- pgvector 和 PostgreSQL 路径未完成真集成验证。
+- 没有性能、并发和长时间运行基准。
+- 主图不执行写业务工具。

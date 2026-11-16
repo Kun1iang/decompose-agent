@@ -22,12 +22,9 @@ def _write_minimal_repo(root: Path) -> None:
     tasks.mkdir(parents=True)
     tests.mkdir(parents=True)
     (tasks / "__init__.py").write_text(
-        "\n".join([
-            "def register_enabled_domains(enable_example: bool | None = None) -> None:",
-            "    # scaffold:domains",
-            "    return None",
-            "",
-        ]),
+        "def register_enabled_domains(enable_example: bool | None = None) -> None:\n"
+        "    # scaffold:domains\n"
+        "    return None\n",
         encoding="utf-8",
     )
 
